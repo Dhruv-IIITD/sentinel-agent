@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HITL Agent — Approvals</title>
+  <style>
+    :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --fg:#e6e9ef; --mut:#9aa4b2;
+            --acc:#5b8cff; --ok:#2fbf71; --warn:#f0a020; --bad:#e5484d; }
+    * { box-sizing:border-box; }
+    body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+           background:var(--bg); color:var(--fg); }
+    header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+    header h1 { font-size:16px; margin:0; font-weight:650; }
+    header .dot { width:8px; height:8px; border-radius:50%; background:var(--ok); }
+    .wrap { max-width:1100px; margin:0 auto; padding:24px; display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+    .full { grid-column:1 / -1; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px; }
+    .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--mut); margin:0 0 14px; }
+    .card { border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:12px; }
+    .row { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .tool { font-weight:650; }
+    .tier { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--warn); }
+    .just { color:var(--mut); margin:8px 0; }
+    pre { background:#0c0e13; border:1px solid var(--line); border-radius:8px; padding:10px; overflow:auto; margin:8px 0;
+          font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; color:#cbd3e1; }
+    textarea, input { width:100%; background:#0c0e13; color:var(--fg); border:1px solid var(--line);
+                      border-radius:8px; padding:8px; font:13px ui-monospace,monospace; }
+    .btns { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+    button { border:0; border-radius:8px; padding:8px 14px; font-weight:600; cursor:pointer; color:#fff; }
+    .approve { background:var(--ok); } .reject { background:var(--bad); } .modify { background:var(--warn); color:#111; }
+    .send { background:var(--acc); }
+    .ghost { background:transparent; border:1px solid var(--line); color:var(--fg); }
+    .muted { color:var(--mut); } .empty { color:var(--mut); padding:8px 0; }
+    label { font-size:12px; color:var(--mut); display:block; margin:8px 0 4px; }
+    .audit-item { border-bottom:1px solid var(--line); padding:8px 0; font-size:13px; display:flex; gap:10px; }
+    .badge { font-size:11px; padding:1px 7px; border-radius:999px; border:1px solid var(--line); }
+    .b-executed { color:var(--ok); } .b-rejected { color:var(--bad); } .b-idempotent_hit { color:var(--acc); }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="dot"></span>
+    <h1>HITL Agent · Approval Dashboard</h1>
+    <span class="muted" id="status" style="margin-left:auto"></span>
+  </header>
+
+  <div class="wrap">
+    <section class="panel">
+      <h2>Start a conversation</h2>
+      <label>Message to the agent</label>
+      <textarea id="msg" rows="3">My order 4471 arrived damaged, I want a refund.</textarea>
+      <label>Thread id</label>
+      <input id="thread" value="demo-1" />
+      <div class="btns"><button class="send" onclick="sendChat()">Send</button></div>
+      <pre id="chatOut" class="muted">No messages yet.</pre>
+    </section>
+
+    <section class="panel">
+      <h2>Pending approvals <span id="pcount" class="muted"></span></h2>
+      <div id="approvals"><div class="empty">Nothing awaiting approval.</div></div>
+    </section>
+
+    <section class="panel full">
+      <h2>Audit log <button class="ghost" style="float:right;padding:4px 10px" onclick="refresh()">Refresh</button></h2>
+      <div id="audit"><div class="empty">No events yet.</div></div>
+    </section>
+  </div>
+
+<script>
+const j = (r) => r.json();
+const esc = (s) => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+async function sendChat() {
+  const message = document.getElementById('msg').value;
+  const thread_id = document.getElementById('thread').value || undefined;
+  setStatus('sending…');
+  const res = await fetch('/chat', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({message, thread_id})}).then(j);
+  document.getElementById('chatOut').textContent =
+    res.status === 'completed' ? '🤖 ' + res.reply
+    : '⏸️  Paused — ' + (res.approvals?.length || 0) + ' action(s) awaiting approval.';
+  await refresh();
+  setStatus('');
+}
+
+const COMPENSABLE = new Set(['issue_refund','cancel_order','apply_credit']);
+
+async function compensate(key) {
+  if (!confirm('Reverse this action? This runs the compensating operation.')) return;
+  setStatus('reversing…');
+  const res = await fetch('/compensate/' + key, {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({reason: 'reversed from dashboard'})}).then(j);
+  await refresh(); setStatus('');
+}
+
+async function counterfactual(threadId, id) {
+  const box = document.getElementById('preview-' + id);
+  box.textContent = 'replaying both branches…';
+  const cf = await fetch('/threads/' + threadId + '/counterfactual', {method:'POST'}).then(j);
+  const o = cf.outcomes || {};
+  const fmt = (b) => `${esc((b && b.reply) || '')} <code>${esc(JSON.stringify((b && b.effects) || {}))}</code>`;
+  box.innerHTML = `🔀 <b>Counterfactual</b> (sandboxed, real state untouched)<br>` +
+    `✅ approve → ${fmt(o.approve)}<br>⛔ reject → ${fmt(o.reject)}`;
+}
+
+async function previewOutcome(id) {
+  const pv = await fetch('/approvals/' + id + '/preview').then(j);
+  const a = pv.outcomes.approve, r = pv.outcomes.reject;
+  document.getElementById('preview-' + id).innerHTML =
+    `✅ <b>Approve</b> → executes · effects <code>${esc(JSON.stringify(a.effects || {}))}</code><br>` +
+    `⛔ <b>Reject</b> → no side effect (customer informed)`;
+}
+
+async function decide(id, decision) {
+  let body = {decision, decided_by: 'manager'};
+  if (decision === 'reject') body.reason = prompt('Reason for rejection?') || 'declined';
+  if (decision === 'modify') {
+    const raw = document.getElementById('args-' + id).value;
+    try { body.modified_args = JSON.parse(raw); }
+    catch { alert('Modified args must be valid JSON'); return; }
+  }
+  setStatus('resuming…');
+  const res = await fetch('/approvals/' + id + '/decision', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}).then(j);
+  if (res.status === 'completed') document.getElementById('chatOut').textContent = '🤖 ' + res.reply;
+  await refresh();
+  setStatus('');
+}
+
+async function refresh() {
+  const approvals = await fetch('/approvals').then(j);
+  const box = document.getElementById('approvals');
+  document.getElementById('pcount').textContent = approvals.length ? '(' + approvals.length + ')' : '';
+  box.innerHTML = approvals.length ? '' : '<div class="empty">Nothing awaiting approval.</div>';
+  for (const a of approvals) {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = `
+      <div class="row"><span class="tool">${esc(a.tool_name)}</span><span class="tier">${esc(a.risk_tier||'')}</span></div>
+      <div class="just">${esc(a.policy_citation || '')}</div>
+      <label>Arguments (editable for “Modify”)</label>
+      <textarea id="args-${a.id}" rows="3">${esc(JSON.stringify(a.tool_args, null, 2))}</textarea>
+      <div class="muted" style="font-size:12px;margin-top:6px">thread ${esc(a.thread_id)} · ${esc(a.created_at||'')}</div>
+      <div class="btns">
+        <button class="approve" onclick="decide('${a.id}','approve')">Approve</button>
+        <button class="modify"  onclick="decide('${a.id}','modify')">Modify</button>
+        <button class="reject"  onclick="decide('${a.id}','reject')">Reject</button>
+        <button class="ghost"   onclick="previewOutcome('${a.id}')">Preview outcomes</button>
+        <button class="ghost"   onclick="counterfactual('${esc(a.thread_id)}','${a.id}')">What if? (replay)</button>
+      </div>
+      <div id="preview-${a.id}" class="muted" style="font-size:12px;margin-top:8px"></div>`;
+    box.appendChild(el);
+  }
+  const audit = await fetch('/audit?limit=25').then(j);
+  const abox = document.getElementById('audit');
+  abox.innerHTML = audit.length ? '' : '<div class="empty">No events yet.</div>';
+  for (const e of [...audit].reverse()) {
+    const el = document.createElement('div');
+    el.className = 'audit-item';
+    const canReverse = e.event_type === 'executed' && e.idempotency_key && COMPENSABLE.has(e.tool_name);
+    el.innerHTML = `<span class="badge b-${esc(e.event_type)}">${esc(e.event_type)}</span>
+      <span>${esc(e.tool_name || '—')}</span>
+      <span class="muted">${esc(e.actor||'')}</span>
+      <span class="muted" style="margin-left:auto">${esc(e.thread_id||'')}</span>` +
+      (canReverse ? ` <button class="ghost" style="padding:2px 10px"
+         onclick="compensate('${esc(e.idempotency_key)}')">Reverse</button>` : '');
+    abox.appendChild(el);
+  }
+}
+function setStatus(s){ document.getElementById('status').textContent = s; }
+refresh();
+</script>
+</body>
+</html>

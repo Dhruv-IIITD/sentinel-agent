@@ -1,0 +1,13 @@
+# Voice worker (LiveKit Agents) — a separate service with its own venv, kept
+# decoupled from the backend's requirements.txt.
+#
+#   uv venv voice/.venv --python 3.12
+#   uv pip install --python voice/.venv -r voice/requirements.txt
+
+livekit-agents==1.6.5
+livekit-plugins-deepgram==1.6.5   # STT (Nova-3) + TTS (Aura-2)
+livekit-plugins-sarvam==1.6.5     # TTS — A/B against Deepgram Aura
+livekit-plugins-groq==1.6.5       # LLM (llama-3.3-70b-versatile)
+livekit-plugins-silero==1.6.5     # VAD (voice-activity detection)
+httpx==0.28.1                     # RPC calls to the HITL backend
+python-dotenv==1.2.2

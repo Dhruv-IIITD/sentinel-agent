@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check src tests evals
+
+      - name: Tests
+        run: PYTHONPATH=src pytest -q
+
+      - name: Routing eval (must stay perfect)
+        run: PYTHONPATH=src python -m evals.run_eval
+
+      - name: Prompt-injection eval (0% attack-success)
+        run: PYTHONPATH=src python -m evals.run_injection_eval
+
+      - name: Voice-surface eval (identity gate + no unapproved executions)
+        run: PYTHONPATH=src python -m evals.run_voice_eval
+
+      - name: Build the console
+        run: npm ci --prefix web && npm run build --prefix web
+
+      - name: Prove cross-process restart (SQLite)
+        run: |
+          CHECKPOINT_BACKEND=sqlite SQLITE_PATH=data/ci-restart.sqlite PYTHONPATH=src python scripts/prove_restart.py pause
+          CHECKPOINT_BACKEND=sqlite SQLITE_PATH=data/ci-restart.sqlite PYTHONPATH=src python scripts/prove_restart.py resume

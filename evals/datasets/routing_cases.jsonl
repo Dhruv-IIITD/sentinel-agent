@@ -1,0 +1,24 @@
+{"id": "r01", "tool": "issue_refund", "amount": 30, "delivered_days_ago": 3, "expected": false, "note": "small, recent -> auto"}
+{"id": "r02", "tool": "issue_refund", "amount": 180, "delivered_days_ago": 3, "expected": true, "note": "over $50 -> approval"}
+{"id": "r03", "tool": "issue_refund", "amount": 49, "delivered_days_ago": 29, "expected": false, "note": "under limit, in window"}
+{"id": "r04", "tool": "issue_refund", "amount": 51, "delivered_days_ago": 3, "expected": true, "note": "just over the amount limit"}
+{"id": "r05", "tool": "issue_refund", "amount": 50, "delivered_days_ago": 30, "expected": false, "note": "boundary: not over limit or window"}
+{"id": "r06", "tool": "issue_refund", "amount": 20, "delivered_days_ago": 45, "expected": true, "note": "outside the 30-day window"}
+{"id": "r07", "tool": "issue_refund", "amount": 10, "delivered_days_ago": 5, "expected": false, "note": "small, recent"}
+{"id": "r08", "tool": "issue_refund", "amount": 75, "delivered_days_ago": 10, "expected": true, "note": "over limit"}
+{"id": "r09", "tool": "issue_refund", "amount": 500, "delivered_days_ago": 1, "expected": true, "note": "large refund"}
+{"id": "r10", "tool": "issue_refund", "amount": 45, "delivered_days_ago": 31, "expected": true, "note": "just outside window"}
+{"id": "r11", "tool": "issue_refund", "amount": 40, "delivered_days_ago": 15, "expected": false, "note": "within both"}
+{"id": "r12", "tool": "issue_refund", "amount": 2000, "delivered_days_ago": 1, "expected": true, "note": "over hard cap"}
+{"id": "r13", "tool": "issue_refund", "amount": 5, "delivered_days_ago": 60, "expected": true, "note": "small but very old"}
+{"id": "r14", "tool": "issue_refund", "amount": 49.99, "delivered_days_ago": 0, "expected": false, "note": "just under limit, today"}
+{"id": "r15", "tool": "issue_refund", "amount": 60, "delivered_days_ago": 2, "expected": true, "note": "over limit"}
+{"id": "r16", "tool": "issue_refund", "amount": 25, "delivered_days_ago": 20, "expected": false, "note": "within both"}
+{"id": "r17", "tool": "cancel_order", "amount": null, "delivered_days_ago": null, "expected": true, "note": "high-stakes -> always approval"}
+{"id": "r18", "tool": "apply_credit", "amount": 50, "delivered_days_ago": null, "expected": true, "note": "high-stakes -> always approval"}
+{"id": "r19", "tool": "apply_credit", "amount": 500, "delivered_days_ago": null, "expected": true, "note": "high-stakes -> always approval"}
+{"id": "r20", "tool": "get_order", "amount": null, "delivered_days_ago": null, "expected": false, "note": "read -> auto"}
+{"id": "r21", "tool": "track_shipment", "amount": null, "delivered_days_ago": null, "expected": false, "note": "read -> auto"}
+{"id": "r22", "tool": "check_inventory", "amount": null, "delivered_days_ago": null, "expected": false, "note": "read -> auto"}
+{"id": "r23", "tool": "update_address", "amount": null, "delivered_days_ago": null, "expected": false, "note": "reversible -> auto"}
+{"id": "r24", "tool": "add_note", "amount": null, "delivered_days_ago": null, "expected": false, "note": "reversible -> auto"}
