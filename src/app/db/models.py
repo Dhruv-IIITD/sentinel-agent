@@ -158,6 +158,8 @@ class AuditLog(TimestampMixin, Base):
     policy_ref: Mapped[str | None] = mapped_column(Text)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     tokens: Mapped[int | None] = mapped_column(Integer)
+    prev_hash: Mapped[str | None] = mapped_column(String(64))
+    entry_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class ToolExecution(TimestampMixin, Base):

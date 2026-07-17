@@ -77,6 +77,7 @@ class Store(Protocol):
     # --- audit ---
     async def write_audit(self, **fields) -> None: ...
     async def list_audit(self, thread_id: str | None = None, limit: int = 100) -> list[dict]: ...
+    async def verify_audit_chain(self) -> dict: ...
 
     # --- compensation / rollback ---
     async def compensate(self, idempotency_key: str, actor: str = "human", reason: str = "") -> dict: ...
@@ -116,6 +117,7 @@ class MemoryStore:
         self.executions: dict[str, dict] = {}  # idempotency ledger
         self._external_locks: dict[str, asyncio.Lock] = {}
         self.audit: list[dict] = []
+        self._last_audit_hash: str | None = None
         self.approvals: dict[str, dict] = {}
         if seed:
             self._seed()
@@ -394,16 +396,34 @@ class MemoryStore:
         return self._once(ctx, "apply_credit", {"customer_id": customer_id, "amount": amount}, make)
 
     async def write_audit(self, **fields) -> None:
+        from ..safety.audit_chain import chain_hash
         from ..safety.guardrails import redact
 
         for key in ("args", "result"):
             if fields.get(key) is not None:
                 fields[key] = redact(fields[key])
-        self.audit.append(fields)
+        row = dict(fields)
+        row.setdefault("id", len(self.audit) + 1)
+        row.setdefault("created_at", _now_iso())
+        row["prev_hash"] = self._last_audit_hash
+        row["entry_hash"] = chain_hash(self._last_audit_hash, row)
+        self.audit.append(row)
+        self._last_audit_hash = row["entry_hash"]
 
     async def list_audit(self, thread_id=None, limit=100) -> list[dict]:
         rows = self.audit if thread_id is None else [a for a in self.audit if a.get("thread_id") == thread_id]
         return list(rows[-limit:])
+
+    async def verify_audit_chain(self) -> dict:
+        from ..safety.audit_chain import chain_hash
+
+        running_hash = None
+        for index, row in enumerate(self.audit):
+            expected = chain_hash(running_hash, row)
+            if row.get("prev_hash") != running_hash or row.get("entry_hash") != expected:
+                return {"intact": False, "entries": len(self.audit), "broken_at": index}
+            running_hash = row["entry_hash"]
+        return {"intact": True, "entries": len(self.audit), "broken_at": None}
 
     # ---- compensation / rollback ----
     async def compensate(self, idempotency_key, actor="human", reason="") -> dict:
@@ -899,8 +919,30 @@ class PostgresStore:
 
         return await self._once(ctx, "apply_credit", {"customer_id": customer_id, "amount": amount}, effect)
 
-    async def write_audit(self, **fields) -> None:
+    @staticmethod
+    def _audit_content(entry) -> dict:
+        return {
+            column.name: getattr(entry, column.name)
+            for column in entry.__table__.columns
+            if column.name not in {"prev_hash", "entry_hash"}
+        }
+
+    async def _append_audit(self, session, row: dict) -> None:
+        from sqlalchemy import select
+
         from ..db.models import AuditLog
+        from ..safety.audit_chain import chain_hash
+
+        # Concurrent writers need a DB sequence/advisory lock to avoid sibling links.
+        prev_hash = await session.scalar(
+            select(AuditLog.entry_hash).order_by(AuditLog.id.desc()).limit(1)
+        )
+        entry = AuditLog(**row, prev_hash=prev_hash, entry_hash="")
+        session.add(entry)
+        await session.flush()
+        entry.entry_hash = chain_hash(prev_hash, self._audit_content(entry))
+
+    async def write_audit(self, **fields) -> None:
         from ..db.session import session_scope
 
         from ..safety.guardrails import redact
@@ -917,7 +959,7 @@ class PostgresStore:
         row.setdefault("event_type", "event")
         row.setdefault("actor", "system")
         async with session_scope() as s:
-            s.add(AuditLog(**row))
+            await self._append_audit(s, row)
 
     async def list_audit(self, thread_id=None, limit=100) -> list[dict]:
         from sqlalchemy import select
@@ -930,21 +972,37 @@ class PostgresStore:
             if thread_id is not None:
                 stmt = stmt.where(AuditLog.thread_id == thread_id)
             rows = (await s.scalars(stmt)).all()
-            return [
-                {
-                    "id": r.id, "thread_id": r.thread_id, "event_type": r.event_type,
-                    "actor": r.actor, "tool_name": r.tool_name, "args": r.args, "result": r.result,
-                    "idempotency_key": r.idempotency_key, "latency_ms": r.latency_ms,
-                    "created_at": r.created_at.isoformat(),
-                }
-                for r in rows
-            ]
+            output = []
+            for row in rows:
+                content = self._audit_content(row)
+                content["created_at"] = row.created_at.isoformat()
+                content["prev_hash"] = row.prev_hash
+                content["entry_hash"] = row.entry_hash
+                output.append(content)
+            return output
+
+    async def verify_audit_chain(self) -> dict:
+        from sqlalchemy import select
+
+        from ..db.models import AuditLog
+        from ..db.session import session_scope
+        from ..safety.audit_chain import chain_hash
+
+        async with session_scope() as s:
+            rows = (await s.scalars(select(AuditLog).order_by(AuditLog.id))).all()
+            running_hash = None
+            for index, row in enumerate(rows):
+                expected = chain_hash(running_hash, self._audit_content(row))
+                if row.prev_hash != running_hash or row.entry_hash != expected:
+                    return {"intact": False, "entries": len(rows), "broken_at": index}
+                running_hash = row.entry_hash
+            return {"intact": True, "entries": len(rows), "broken_at": None}
 
     # ---- compensation / rollback ----
     async def compensate(self, idempotency_key, actor="human", reason="") -> dict:
         from sqlalchemy import select
 
-        from ..db.models import AuditLog, Order, Refund, ToolExecution
+        from ..db.models import Order, Refund, ToolExecution
         from ..db.session import session_scope
 
         async with session_scope() as s:
@@ -978,10 +1036,11 @@ class PostgresStore:
                 return {"error": f"{te.tool_name} is not compensable"}
 
             te.compensated = True
-            s.add(AuditLog(
-                thread_id=te.thread_id, event_type="compensated", actor=actor,
-                tool_name=te.tool_name, result=undo, idempotency_key=idempotency_key, policy_ref=reason,
-            ))
+            await self._append_audit(s, {
+                "thread_id": te.thread_id, "event_type": "compensated", "actor": actor,
+                "tool_name": te.tool_name, "result": undo,
+                "idempotency_key": idempotency_key, "policy_ref": reason,
+            })
             return undo
 
     async def dry_run(self, tool_name, args) -> dict:
