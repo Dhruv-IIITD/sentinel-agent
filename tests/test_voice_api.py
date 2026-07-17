@@ -19,6 +19,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from app.agent.graph import build_graph
 from app.domain.ecommerce import MemoryStore
 from app.main import app
+from app.safety.verification import InMemoryVerificationStore
 from tests.fakes import FakeModel
 
 CALL = "voice-call-1"  # a call's graph thread
@@ -35,7 +36,7 @@ def _inject(store: MemoryStore, model: FakeModel | None = None) -> None:
     requested *by voice* needs a human.
     """
     app.state.store = store
-    app.state.verified = {}
+    app.state.verification = InMemoryVerificationStore()
     app.state.graph = build_graph(
         MemorySaver(),
         store,

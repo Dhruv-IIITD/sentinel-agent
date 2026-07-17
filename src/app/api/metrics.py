@@ -22,9 +22,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
-router = APIRouter(tags=["metrics"])
+from ..auth.deps import get_current_user
+
+router = APIRouter(tags=["metrics"], dependencies=[Depends(get_current_user)])
 
 
 def _pct(values: list[float], q: float) -> float | None:

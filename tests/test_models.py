@@ -19,6 +19,7 @@ def test_all_expected_tables_registered():
     names = set(Base.metadata.tables)
     assert {
         "customers",
+        "products",
         "orders",
         "refunds",
         "order_notes",

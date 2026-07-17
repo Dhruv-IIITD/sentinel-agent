@@ -16,11 +16,13 @@ the effect again.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol, runtime_checkable
 
+from ..payments import MockPaymentProvider, PaymentProvider, build_payment_provider
 from ..safety.idempotency import args_hash
 
 # Maps a human's decision verb to the stored approval status.
@@ -51,11 +53,17 @@ class Store(Protocol):
     # system you can look at and add to (e.g. register yourself, then call in).
     async def list_customers(self) -> list[dict]: ...
     async def list_orders(self) -> list[dict]: ...
+    async def list_products(self) -> list[dict]: ...
+    async def get_product(self, product_id: int) -> dict | None: ...
+    async def create_product(
+        self, sku: str, name: str, price: float, description: str = "", emoji: str = "",
+    ) -> dict: ...
     async def get_customer_by_email(self, email: str) -> dict | None: ...
     async def create_customer(self, name: str, email: str) -> dict: ...
     async def create_order(
         self, customer_id: int, item_description: str, amount: float,
         status: str = "delivered", delivered_at: str | None = None,
+        product_id: int | None = None,
     ) -> dict: ...
 
     # --- mutations (exactly-once via ctx) ---
@@ -81,6 +89,9 @@ class Store(Protocol):
     async def get_approval(self, approval_id: str) -> dict | None: ...
     async def decide_approval(self, approval_id: str, decision: str, modified_args: dict | None,
                               reason: str | None, decided_by: str | None) -> dict | None: ...
+    async def mark_escalated(
+        self, approval_id: str, at: datetime | None = None,
+    ) -> dict | None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -91,13 +102,18 @@ class Store(Protocol):
 class MemoryStore:
     """Dict-backed Store, seeded with the DESIGN.md demo data."""
 
-    def __init__(self, seed: bool = True) -> None:
+    def __init__(
+        self, seed: bool = True, payments: PaymentProvider | None = None,
+    ) -> None:
+        self.payments = payments or MockPaymentProvider()
         self.customers: dict[int, dict] = {}
+        self.products: dict[int, dict] = {}
         self.orders: dict[int, dict] = {}
         self.refunds: list[dict] = []
         self.credits: list[dict] = []
         self.notes: list[dict] = []
         self.executions: dict[str, dict] = {}  # idempotency ledger
+        self._external_locks: dict[str, asyncio.Lock] = {}
         self.audit: list[dict] = []
         self.approvals: dict[str, dict] = {}
         if seed:
@@ -109,23 +125,43 @@ class MemoryStore:
             1: {"id": 1, "name": "Alice Rivera", "email": "alice@example.com"},
             2: {"id": 2, "name": "Bob Chen", "email": "bob@example.com"},
         }
+        self.products = {
+            1: {
+                "id": 1, "sku": "CERAMIC-DINNER-SET", "name": "Ceramic dinner set",
+                "price": 180.0, "active": True, "description": "", "emoji": "🍽️",
+            },
+            2: {
+                "id": 2, "sku": "BLUETOOTH-SPEAKER", "name": "Bluetooth speaker",
+                "price": 39.99, "active": True, "description": "", "emoji": "🔊",
+            },
+            3: {
+                "id": 3, "sku": "STANDING-DESK", "name": "Standing desk",
+                "price": 640.0, "active": True, "description": "", "emoji": "🪑",
+            },
+        }
         self.orders = {
             4471: {
-                "id": 4471, "customer_id": 1, "amount": 180.0, "status": "delivered",
-                "item_description": "Ceramic dinner set (arrived damaged)",
+                "id": 4471, "customer_id": 1, "product_id": 1,
+                "amount": 180.0, "status": "delivered",
+                "item_description": "Ceramic dinner set",
                 "shipping_address": "12 Oak St, Portland OR",
+                "payment_ref": "mock_pi_4471",
                 "delivered_at": (now - timedelta(days=3)).isoformat(),
             },
             4472: {
-                "id": 4472, "customer_id": 2, "amount": 39.99, "status": "delivered",
+                "id": 4472, "customer_id": 2, "product_id": 2,
+                "amount": 39.99, "status": "delivered",
                 "item_description": "Bluetooth speaker",
                 "shipping_address": "5 Pine Ave, Austin TX",
+                "payment_ref": "mock_pi_4472",
                 "delivered_at": (now - timedelta(days=10)).isoformat(),
             },
             4473: {
-                "id": 4473, "customer_id": 1, "amount": 640.0, "status": "in_transit",
+                "id": 4473, "customer_id": 1, "product_id": 3,
+                "amount": 640.0, "status": "in_transit",
                 "item_description": "Standing desk",
                 "shipping_address": "12 Oak St, Portland OR",
+                "payment_ref": "mock_pi_4473",
                 "delivered_at": None,
             },
         }
@@ -142,6 +178,23 @@ class MemoryStore:
                 "compensated": False, "thread_id": ctx.thread_id if ctx else "",
             }
         return result
+
+    async def _once_external(self, ctx: ExecCtx | None, tool_name: str, args: dict, make) -> dict:
+        """Keep an awaited provider call behind the same keyed ledger check."""
+        key = ctx.idempotency_key if ctx else None
+        if key is None:
+            return await make()
+        lock = self._external_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if key in self.executions:
+                return {**self.executions[key]["result"], "idempotent_replay": True}
+            result = await make()
+            if "error" not in result:
+                self.executions[key] = {
+                    "tool_name": tool_name, "args": args, "result": result,
+                    "compensated": False, "thread_id": ctx.thread_id,
+                }
+            return result
 
     # ---- reads ----
     async def get_order(self, order_id: int) -> dict:
@@ -172,6 +225,24 @@ class MemoryStore:
     async def list_orders(self) -> list[dict]:
         return [self._order_with_customer(o) for o in sorted(self.orders.values(), key=lambda o: o["id"])]
 
+    async def list_products(self) -> list[dict]:
+        return [dict(p) for p in sorted(self.products.values(), key=lambda p: p["id"])]
+
+    async def get_product(self, product_id: int) -> dict | None:
+        product = self.products.get(product_id)
+        return dict(product) if product is not None else None
+
+    async def create_product(self, sku, name, price, description="", emoji="") -> dict:
+        if any(p["sku"] == sku for p in self.products.values()):
+            return {"error": f"product SKU {sku} already exists"}
+        pid = max(self.products, default=0) + 1
+        row = {
+            "id": pid, "sku": sku, "name": name, "price": float(price),
+            "active": True, "description": description, "emoji": emoji,
+        }
+        self.products[pid] = row
+        return dict(row)
+
     async def get_customer_by_email(self, email: str) -> dict | None:
         e = (email or "").strip().lower()
         return next((dict(c) for c in self.customers.values() if c["email"].lower() == e), None)
@@ -185,12 +256,26 @@ class MemoryStore:
         self.customers[cid] = row
         return dict(row)
 
-    async def create_order(self, customer_id, item_description, amount, status="delivered", delivered_at=None) -> dict:
+    async def create_order(
+        self, customer_id, item_description, amount, status="delivered", delivered_at=None,
+        product_id=None,
+    ) -> dict:
+        if product_id is not None:
+            product = self.products.get(product_id)
+            if product is None:
+                return {"error": f"product {product_id} not found"}
+            item_description = product["name"]
+            amount = product["price"]
         oid = max(self.orders, default=4470) + 1
+        payment = await self.payments.create_payment(
+            order_id=oid, amount=float(amount), description=item_description,
+        )
         row = {
-            "id": oid, "customer_id": customer_id, "amount": float(amount),
+            "id": oid, "customer_id": customer_id, "product_id": product_id,
+            "amount": float(amount),
             "status": status, "item_description": item_description,
-            "shipping_address": "", "delivered_at": delivered_at,
+            "shipping_address": "", "payment_ref": payment.get("payment_ref"),
+            "delivered_at": delivered_at,
         }
         self.orders[oid] = row
         return self._order_with_customer(row)
@@ -214,18 +299,35 @@ class MemoryStore:
         return self._once(ctx, "add_note", {"order_id": order_id, "note": note}, make)
 
     async def issue_refund(self, order_id, amount, reason, ctx=None) -> dict:
-        def make():
+        async def make():
             o = self.orders.get(order_id)
             if not o:
                 return {"error": f"order {order_id} not found"}
+            provider_refund = await self.payments.refund(
+                payment_ref=o.get("payment_ref"),
+                amount=amount,
+                idempotency_key=ctx.idempotency_key if ctx else None,
+                reason=reason,
+            )
+            if "error" in provider_refund:
+                return provider_refund
             rid = len(self.refunds) + 1
+            provider = provider_refund.get("provider")
+            provider_refund_id = provider_refund.get("refund_id")
+            status = provider_refund.get("status", "issued")
             self.refunds.append(
                 {"id": rid, "order_id": order_id, "amount": amount, "reason": reason,
-                 "status": "issued", "idempotency_key": ctx.idempotency_key if ctx else None}
+                 "status": status, "idempotency_key": ctx.idempotency_key if ctx else None,
+                 "provider": provider, "provider_refund_id": provider_refund_id}
             )
-            return {"refund_id": rid, "order_id": order_id, "amount": amount, "status": "issued"}
+            return {
+                "refund_id": rid, "order_id": order_id, "amount": amount, "status": status,
+                "provider": provider, "provider_refund_id": provider_refund_id,
+            }
 
-        return self._once(ctx, "issue_refund", {"order_id": order_id, "amount": amount}, make)
+        return await self._once_external(
+            ctx, "issue_refund", {"order_id": order_id, "amount": amount}, make
+        )
 
     async def cancel_order(self, order_id, reason, ctx=None) -> dict:
         def make():
@@ -270,11 +372,16 @@ class MemoryStore:
         tool = meta["tool_name"]
         undo = {"status": "compensated", "tool_name": tool}
         if tool == "issue_refund":
+            # Stripe refunds are terminal; compensation records an internal reversal only.
             for r in self.refunds:
                 if r.get("idempotency_key") == idempotency_key:
                     r["status"] = "reversed"
                     undo["reversed_refund_id"] = r["id"]
                     undo["amount"] = r["amount"]
+                    if r.get("provider") == "stripe":
+                        undo["note"] = (
+                            "Stripe refunds are terminal; no external re-charge was issued."
+                        )
         elif tool == "cancel_order":
             oid = meta["args"].get("order_id")
             o = self.orders.get(oid)
@@ -315,7 +422,8 @@ class MemoryStore:
                 "tool_args": item.get("args", {}), "risk_tier": item.get("risk_tier"),
                 "policy_citation": item.get("justification"),
                 "status": "pending", "modified_args": None, "reason": None,
-                "decided_by": None, "decided_at": None, "created_at": _now_iso(),
+                "decided_by": None, "decided_at": None, "escalated_at": None,
+                "created_at": _now_iso(),
             }
             self.approvals[aid] = row
             created.append(row)
@@ -343,6 +451,13 @@ class MemoryStore:
         row["decided_at"] = _now_iso()
         return row
 
+    async def mark_escalated(self, approval_id, at=None) -> dict | None:
+        row = self.approvals.get(approval_id)
+        if row is None or row["status"] != "pending" or row.get("escalated_at") is not None:
+            return None
+        row["escalated_at"] = (at or datetime.now(timezone.utc)).isoformat()
+        return row
+
     # ---- dry-run (execute against a throwaway clone) ----
     async def dry_run(self, tool_name, args) -> dict:
         import copy
@@ -355,6 +470,7 @@ class MemoryStore:
 
         sandbox = MemoryStore(seed=False)
         sandbox.customers = copy.deepcopy(self.customers)
+        sandbox.products = copy.deepcopy(self.products)
         sandbox.orders = copy.deepcopy(self.orders)
         sandbox.refunds = copy.deepcopy(self.refunds)
         sandbox.credits = copy.deepcopy(self.credits)
@@ -375,6 +491,7 @@ class MemoryStore:
 
         c = MemoryStore(seed=False)
         c.customers = copy.deepcopy(self.customers)
+        c.products = copy.deepcopy(self.products)
         c.orders = copy.deepcopy(self.orders)
         c.refunds = copy.deepcopy(self.refunds)
         c.credits = copy.deepcopy(self.credits)
@@ -394,8 +511,12 @@ class MemoryStore:
 class PostgresStore:
     """SQLAlchemy-backed Store. Effect + idempotency-ledger insert are one tx."""
 
+    def __init__(self, payments: PaymentProvider | None = None) -> None:
+        self.payments = payments or MockPaymentProvider()
+
     async def _once(self, ctx: ExecCtx | None, tool_name: str, args_for_hash: dict, effect) -> dict:
         """Run ``effect(session)`` at most once per idempotency key, atomically."""
+        from sqlalchemy import text
         from sqlalchemy.exc import IntegrityError
 
         from ..db.models import ToolExecution
@@ -405,6 +526,11 @@ class PostgresStore:
         try:
             async with session_scope() as s:
                 if key is not None:
+                    # Serialize the ledger check + external effect across API workers.
+                    await s.execute(
+                        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                        {"key": key},
+                    )
                     existing = await s.get(ToolExecution, key)
                     if existing is not None:
                         return {**(existing.result or {}), "idempotent_replay": True}
@@ -438,9 +564,10 @@ class PostgresStore:
                 return {"error": f"order {order_id} not found"}
             cust = await s.get(Customer, o.customer_id)
             return {
-                "id": o.id, "customer_id": o.customer_id, "amount": float(o.amount),
+                "id": o.id, "customer_id": o.customer_id, "product_id": o.product_id,
+                "amount": float(o.amount),
                 "status": o.status, "item_description": o.item_description,
-                "shipping_address": o.shipping_address,
+                "shipping_address": o.shipping_address, "payment_ref": o.payment_ref,
                 "delivered_at": o.delivered_at.isoformat() if o.delivered_at else None,
                 "customer_name": cust.name if cust else None,
                 "customer_email": cust.email if cust else None,
@@ -464,9 +591,10 @@ class PostgresStore:
     @staticmethod
     def _order_dict(o, cust) -> dict:
         return {
-            "id": o.id, "customer_id": o.customer_id, "amount": float(o.amount),
+            "id": o.id, "customer_id": o.customer_id, "product_id": o.product_id,
+            "amount": float(o.amount),
             "status": o.status, "item_description": o.item_description,
-            "shipping_address": o.shipping_address,
+            "shipping_address": o.shipping_address, "payment_ref": o.payment_ref,
             "delivered_at": o.delivered_at.isoformat() if o.delivered_at else None,
             "customer_name": cust.name if cust else None,
             "customer_email": cust.email if cust else None,
@@ -495,6 +623,52 @@ class PostgresStore:
             )).all()
             return [self._order_dict(o, o.customer) for o in rows]
 
+    @staticmethod
+    def _product_dict(product) -> dict:
+        return {
+            "id": product.id, "sku": product.sku, "name": product.name,
+            "price": float(product.price), "active": product.active,
+            "description": product.description, "emoji": product.emoji,
+        }
+
+    async def list_products(self) -> list[dict]:
+        from sqlalchemy import select
+
+        from ..db.models import Product
+        from ..db.session import session_scope
+
+        async with session_scope() as s:
+            rows = (await s.scalars(select(Product).order_by(Product.id))).all()
+            return [self._product_dict(product) for product in rows]
+
+    async def get_product(self, product_id: int) -> dict | None:
+        from ..db.models import Product
+        from ..db.session import session_scope
+
+        async with session_scope() as s:
+            product = await s.get(Product, product_id)
+            return self._product_dict(product) if product is not None else None
+
+    async def create_product(self, sku, name, price, description="", emoji="") -> dict:
+        from decimal import Decimal
+
+        from sqlalchemy import select
+
+        from ..db.models import Product
+        from ..db.session import session_scope
+
+        async with session_scope() as s:
+            existing = (await s.scalars(select(Product).where(Product.sku == sku))).first()
+            if existing is not None:
+                return {"error": f"product SKU {sku} already exists"}
+            product = Product(
+                sku=sku, name=name, price=Decimal(str(price)),
+                description=description, emoji=emoji,
+            )
+            s.add(product)
+            await s.flush()
+            return self._product_dict(product)
+
     async def get_customer_by_email(self, email: str) -> dict | None:
         from sqlalchemy import func, select
 
@@ -520,21 +694,35 @@ class PostgresStore:
             await s.flush()
             return {"id": c.id, "name": c.name, "email": c.email}
 
-    async def create_order(self, customer_id, item_description, amount, status="delivered", delivered_at=None) -> dict:
+    async def create_order(
+        self, customer_id, item_description, amount, status="delivered", delivered_at=None,
+        product_id=None,
+    ) -> dict:
         from datetime import datetime
         from decimal import Decimal
 
-        from ..db.models import Customer, Order
+        from ..db.models import Customer, Order, Product
         from ..db.session import session_scope
 
         dt = datetime.fromisoformat(delivered_at) if delivered_at else None
         async with session_scope() as s:
+            if product_id is not None:
+                product = await s.get(Product, product_id)
+                if product is None:
+                    return {"error": f"product {product_id} not found"}
+                item_description = product.name
+                amount = product.price
             o = Order(
-                customer_id=customer_id, amount=Decimal(str(amount)), status=status,
+                customer_id=customer_id, product_id=product_id,
+                amount=Decimal(str(amount)), status=status,
                 item_description=item_description, shipping_address="", delivered_at=dt,
             )
             s.add(o)
             await s.flush()
+            payment = await self.payments.create_payment(
+                order_id=o.id, amount=float(o.amount), description=o.item_description,
+            )
+            o.payment_ref = payment.get("payment_ref")
             cust = await s.get(Customer, customer_id)
             return self._order_dict(o, cust)
 
@@ -568,13 +756,28 @@ class PostgresStore:
             o = await s.get(Order, order_id)
             if o is None:
                 return {"error": f"order {order_id} not found"}
+            provider_refund = await self.payments.refund(
+                payment_ref=o.payment_ref,
+                amount=amount,
+                idempotency_key=ctx.idempotency_key if ctx else None,
+                reason=reason,
+            )
+            if "error" in provider_refund:
+                return provider_refund
+            provider = provider_refund.get("provider")
+            provider_refund_id = provider_refund.get("refund_id")
+            status = provider_refund.get("status", "issued")
             r = Refund(
                 order_id=order_id, amount=Decimal(str(amount)), reason=reason,
+                provider=provider, provider_refund_id=provider_refund_id, status=status,
                 idempotency_key=ctx.idempotency_key if ctx else None,
             )
             s.add(r)
             await s.flush()
-            return {"refund_id": r.id, "order_id": order_id, "amount": amount, "status": "issued"}
+            return {
+                "refund_id": r.id, "order_id": order_id, "amount": amount, "status": status,
+                "provider": provider, "provider_refund_id": provider_refund_id,
+            }
 
         return await self._once(ctx, "issue_refund", {"order_id": order_id, "amount": amount}, effect)
 
@@ -654,6 +857,7 @@ class PostgresStore:
 
             undo = {"status": "compensated", "tool_name": te.tool_name}
             if te.tool_name == "issue_refund":
+                # Stripe refunds are terminal; compensation records an internal reversal only.
                 r = (await s.scalars(
                     select(Refund).where(Refund.idempotency_key == idempotency_key)
                 )).first()
@@ -661,6 +865,10 @@ class PostgresStore:
                     r.status = "reversed"
                     undo["reversed_refund_id"] = r.id
                     undo["amount"] = float(r.amount)
+                    if r.provider == "stripe":
+                        undo["note"] = (
+                            "Stripe refunds are terminal; no external re-charge was issued."
+                        )
             elif te.tool_name == "cancel_order":
                 oid = (te.result or {}).get("order_id")
                 o = await s.get(Order, oid) if oid else None
@@ -700,6 +908,7 @@ class PostgresStore:
             "policy_citation": ar.policy_citation, "status": ar.status,
             "modified_args": ar.modified_args, "reason": ar.reason, "decided_by": ar.decided_by,
             "decided_at": ar.decided_at.isoformat() if ar.decided_at else None,
+            "escalated_at": ar.escalated_at.isoformat() if ar.escalated_at else None,
             "created_at": ar.created_at.isoformat() if ar.created_at else None,
         }
 
@@ -776,9 +985,31 @@ class PostgresStore:
             await s.flush()
             return self._ar_to_dict(ar)
 
+    async def mark_escalated(self, approval_id, at=None) -> dict | None:
+        import uuid as _uuid
 
-def build_store(settings) -> Store:
+        from sqlalchemy import select
+
+        from ..db.models import ApprovalRequest
+        from ..db.session import session_scope
+
+        escalated_at = at or datetime.now(timezone.utc)
+        async with session_scope() as s:
+            ar = await s.scalar(
+                select(ApprovalRequest)
+                .where(ApprovalRequest.id == _uuid.UUID(approval_id))
+                .with_for_update()
+            )
+            if ar is None or ar.status != "pending" or ar.escalated_at is not None:
+                return None
+            ar.escalated_at = escalated_at
+            await s.flush()
+            return self._ar_to_dict(ar)
+
+
+def build_store(settings, payments: PaymentProvider | None = None) -> Store:
     """Return the Store for the configured backend."""
+    payments = payments or build_payment_provider(settings)
     if settings.database_configured:
-        return PostgresStore()
-    return MemoryStore()
+        return PostgresStore(payments=payments)
+    return MemoryStore(payments=payments)

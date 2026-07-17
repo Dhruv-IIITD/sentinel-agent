@@ -24,3 +24,14 @@ def test_auto_backend_is_memory_without_db():
 def test_explicit_backend_overrides_auto():
     s = Settings(database_url="postgresql://u:p@h/db", checkpoint_backend="memory")
     assert s.resolved_checkpoint_backend == "memory"
+
+
+def test_redis_is_optional():
+    assert Settings(redis_url="").redis_configured is False
+    assert Settings(redis_url="redis://localhost:6379/0").redis_configured is True
+
+
+def test_auth_is_disabled_by_default():
+    settings = Settings(auth_enabled=False, jwt_secret="")
+    assert settings.auth_enabled is False
+    assert settings.operator_approval_limit == 100.0

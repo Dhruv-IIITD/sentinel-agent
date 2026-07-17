@@ -7,6 +7,7 @@ export type Approval = {
   policy_citation: string | null;
   status: string;
   created_at: string | null;
+  escalated_at: string | null;
 };
 
 export type AuditRow = {
@@ -20,6 +21,7 @@ export type AuditRow = {
 
 export type Order = {
   id: number;
+  product_id: number | null;
   amount: number;
   status: string;
   item_description: string;
@@ -28,11 +30,30 @@ export type Order = {
   delivered_at: string | null;
 };
 
+export type Product = {
+  id: number;
+  sku: string;
+  name: string;
+  price: number;
+  active: boolean;
+  description: string;
+  emoji: string;
+};
+
+export type NewProduct = {
+  sku: string;
+  name: string;
+  price: number;
+  description?: string;
+  emoji?: string;
+};
+
 export type NewOrder = {
   name: string;
   email: string;
-  item: string;
-  amount: number;
+  product_id?: number;
+  item?: string;
+  amount?: number;
   status?: string;
   delivered_days_ago?: number | null;
 };
@@ -76,23 +97,77 @@ export type Metrics = {
   tool_latency_ms: { p50: number | null; p95: number | null };
 };
 
+export type AuthUser = {
+  email: string;
+  role: string;
+  operator_approval_limit: number;
+};
+
+export type LoginResponse = {
+  access_token: string;
+  token_type: "bearer";
+  role: string;
+};
+
+const TOKEN_KEY = "hitl-access-token";
+export const AUTH_CLEARED_EVENT = "hitl-auth-cleared";
+
+export function getAccessToken(): string | null {
+  return window.localStorage.getItem(TOKEN_KEY);
+}
+
+export function setAccessToken(token: string): void {
+  window.localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearAccessToken(): void {
+  window.localStorage.removeItem(TOKEN_KEY);
+  window.dispatchEvent(new Event(AUTH_CLEARED_EVENT));
+}
+
+async function errorDetail(response: Response): Promise<string> {
+  const body = await response.text().catch(() => "");
+  if (!body) return `${response.status} ${response.statusText}`;
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown };
+    if (typeof parsed.detail === "string") return parsed.detail;
+  } catch {
+    // The backend may return a plain-text error through a proxy.
+  }
+  return body;
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const token = getAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
   const r = await fetch(url, {
     ...init,
-    headers: init?.body ? { "Content-Type": "application/json", ...init?.headers } : init?.headers,
+    headers,
   });
+  if (r.status === 401) clearAccessToken();
   if (!r.ok) {
-    const detail = await r.text().catch(() => "");
-    throw new Error(detail || `${r.status} ${r.statusText}`);
+    throw new Error(await errorDetail(r));
   }
   return r.json() as Promise<T>;
 }
 
 export const api = {
+  login: (email: string, password: string) =>
+    req<LoginResponse>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  me: () => req<AuthUser>("/auth/me"),
   approvals: () => req<Approval[]>("/approvals"),
   audit: (limit = 40) => req<AuditRow[]>(`/audit?limit=${limit}`),
   metrics: () => req<Metrics>("/metrics"),
   orders: () => req<Order[]>("/store/orders"),
+  products: () => req<Product[]>("/store/products"),
+  createProduct: (body: NewProduct) =>
+    req<Product>("/store/products", { method: "POST", body: JSON.stringify(body) }),
   createOrder: (body: NewOrder) =>
     req<CreatedOrder>("/store/orders", { method: "POST", body: JSON.stringify(body) }),
   decide: (id: string, body: Decision) =>

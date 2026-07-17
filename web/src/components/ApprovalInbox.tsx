@@ -21,15 +21,25 @@ function ApprovalCard({
   approval,
   onDecided,
   notify,
+  role,
+  operatorApprovalLimit,
 }: {
   approval: Approval;
   onDecided: (msg: string, ok: boolean) => void;
   notify: (msg: string, ok?: boolean) => void;
+  role: string;
+  operatorApprovalLimit: number;
 }) {
   const [args, setArgs] = useState(() => JSON.stringify(approval.tool_args, null, 2));
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [call, setCall] = useState<ApprovalCall | null>(null);
   const [busy, setBusy] = useState(false);
+  const amount = Number(approval.tool_args.amount);
+  const exceedsOperatorLimit =
+    role === "operator" &&
+    (approval.tool_name === "issue_refund" || approval.tool_name === "apply_credit") &&
+    Number.isFinite(amount) &&
+    amount > operatorApprovalLimit;
 
   /** Put a human on a call to decide this. Rings a real phone when a SIP trunk is
    *  configured; otherwise we join the same room from the browser. */
@@ -141,6 +151,7 @@ function ApprovalCard({
       <div className="card__head">
         <span className="card__tool">{approval.tool_name}</span>
         <Badge status={tierStatus(approval.risk_tier)} label={tierLabel(approval.risk_tier)} />
+        {approval.escalated_at && <Badge status="critical" label="overdue" icon="clock" />}
       </div>
 
       {approval.policy_citation &&
@@ -169,9 +180,15 @@ function ApprovalCard({
       </div>
 
       <div className="btns" style={{ marginTop: 12 }}>
-        <button className="btn btn--good" disabled={busy} onClick={() => decide("approve")}>
-          Approve
-        </button>
+        {exceedsOperatorLimit ? (
+          <button className="btn" disabled title={`Supervisor approval required above $${operatorApprovalLimit.toFixed(2)}`}>
+            Escalate to manager
+          </button>
+        ) : (
+          <button className="btn btn--good" disabled={busy} onClick={() => decide("approve")}>
+            Approve
+          </button>
+        )}
         <button className="btn btn--warning" disabled={busy} onClick={() => decide("modify")}>
           Modify
         </button>
@@ -214,10 +231,14 @@ export function ApprovalInbox({
   approvals,
   onDecided,
   notify,
+  role,
+  operatorApprovalLimit,
 }: {
   approvals: Approval[];
   onDecided: (msg: string, ok: boolean) => void;
   notify: (msg: string, ok?: boolean) => void;
+  role: string;
+  operatorApprovalLimit: number;
 }) {
   if (approvals.length === 0) {
     return (
@@ -232,7 +253,14 @@ export function ApprovalInbox({
   return (
     <>
       {approvals.map((a) => (
-        <ApprovalCard key={a.id} approval={a} onDecided={onDecided} notify={notify} />
+        <ApprovalCard
+          key={a.id}
+          approval={a}
+          onDecided={onDecided}
+          notify={notify}
+          role={role}
+          operatorApprovalLimit={operatorApprovalLimit}
+        />
       ))}
     </>
   );

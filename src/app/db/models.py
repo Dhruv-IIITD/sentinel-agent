@@ -41,15 +41,29 @@ class Customer(TimestampMixin, Base):
     orders: Mapped[list["Order"]] = relationship(back_populates="customer")
 
 
+class Product(TimestampMixin, Base):
+    __tablename__ = "products"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sku: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    emoji: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+
+
 class Order(TimestampMixin, Base):
     __tablename__ = "orders"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), nullable=False)
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"))
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="delivered")
     item_description: Mapped[str] = mapped_column(String(300), nullable=False, default="")
     shipping_address: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    payment_ref: Mapped[str | None] = mapped_column(String(255))
     delivered_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
     customer: Mapped["Customer"] = relationship(back_populates="orders")
@@ -65,6 +79,8 @@ class Refund(TimestampMixin, Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="issued")
     reason: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    provider: Mapped[str | None] = mapped_column(String(40))
+    provider_refund_id: Mapped[str | None] = mapped_column(String(255))
     # Ties a refund row back to the exactly-once execution that created it.
     idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True)
 
@@ -122,6 +138,7 @@ class ApprovalRequest(TimestampMixin, Base):
     reason: Mapped[str | None] = mapped_column(Text)
     decided_by: Mapped[str | None] = mapped_column(String(120))
     decided_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    escalated_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     expires_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
 

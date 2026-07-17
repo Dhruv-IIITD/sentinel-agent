@@ -11,6 +11,9 @@ export default defineConfig({
   base: "/ui/",
   build: { outDir: "dist", emptyOutDir: true },
   server: {
-    proxy: Object.fromEntries(proxied.map((p) => [p, { target: API, changeOrigin: true }])),
+    proxy: {
+      ...Object.fromEntries(proxied.map((p) => [p, { target: API, changeOrigin: true }])),
+      "/ws": { target: API, ws: true, changeOrigin: true },
+    },
   },
 });

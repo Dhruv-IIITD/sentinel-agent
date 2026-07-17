@@ -6,10 +6,12 @@ ledger entry that guaranteed exactly-once also anchors the rollback.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-router = APIRouter(tags=["compensate"])
+from ..auth.deps import get_current_user
+
+router = APIRouter(tags=["compensate"], dependencies=[Depends(get_current_user)])
 
 
 class CompensateRequest(BaseModel):

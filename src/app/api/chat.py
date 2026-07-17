@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from ..events import EventBus, safe_publish
 from .serialization import last_reply
 
 router = APIRouter(tags=["chat"])
@@ -42,14 +44,31 @@ def _initial_state(req: ChatRequest) -> dict:
     }
 
 
-async def finalize(graph, store, thread_id: str, cfg: dict, result: dict) -> dict:
+async def _persist_approvals(
+    store, event_bus: EventBus, thread_id: str, checkpoint_id: str | None, items: list[dict]
+) -> list[dict]:
+    """Persist and announce only newly-created rows, so retries never double-publish."""
+    created = await store.create_approvals(thread_id, checkpoint_id, items)
+    for approval in created:
+        await safe_publish(event_bus, {
+            "type": "approval.created",
+            "approval_id": approval["id"],
+            "thread_id": approval["thread_id"],
+            "tool_name": approval["tool_name"],
+            "status": "pending",
+            "at": datetime.now(timezone.utc).isoformat(),
+        })
+    return created
+
+
+async def finalize(graph, store, event_bus: EventBus, thread_id: str, cfg: dict, result: dict) -> dict:
     """Shape a graph result into a chat response, persisting approvals if paused."""
     interrupts = result.get("__interrupt__") if isinstance(result, dict) else None
     if interrupts:
         items = interrupts[0].value  # list of pending approval items
         state = await graph.aget_state(cfg)
         checkpoint_id = (state.config.get("configurable") or {}).get("checkpoint_id")
-        await store.create_approvals(thread_id, checkpoint_id, items)
+        await _persist_approvals(store, event_bus, thread_id, checkpoint_id, items)
         pending = await store.list_approvals(status="pending", thread_id=thread_id)
         return {"thread_id": thread_id, "status": "awaiting_approval", "approvals": pending}
 
@@ -64,10 +83,11 @@ async def finalize(graph, store, thread_id: str, cfg: dict, result: dict) -> dic
 async def chat(req: ChatRequest, request: Request) -> dict:
     graph = request.app.state.graph
     store = request.app.state.store
+    event_bus = request.app.state.event_bus
     thread_id = req.thread_id or uuid.uuid4().hex
     cfg = {"configurable": {"thread_id": thread_id}}
     result = await graph.ainvoke(_initial_state(req), cfg)
-    return await finalize(graph, store, thread_id, cfg, result)
+    return await finalize(graph, store, event_bus, thread_id, cfg, result)
 
 
 @router.post("/chat/stream")
@@ -76,6 +96,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> EventSourceResponse
     ``approval_required`` or ``message`` event."""
     graph = request.app.state.graph
     store = request.app.state.store
+    event_bus = request.app.state.event_bus
     thread_id = req.thread_id or uuid.uuid4().hex
     cfg = {"configurable": {"thread_id": thread_id}}
 
@@ -105,7 +126,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> EventSourceResponse
         if snapshot.interrupts:
             items = snapshot.interrupts[0].value
             checkpoint_id = (snapshot.config.get("configurable") or {}).get("checkpoint_id")
-            await store.create_approvals(thread_id, checkpoint_id, items)
+            await _persist_approvals(store, event_bus, thread_id, checkpoint_id, items)
             pending = await store.list_approvals(status="pending", thread_id=thread_id)
             yield {"event": "approval_required", "data": json.dumps({"approvals": pending})}
         else:

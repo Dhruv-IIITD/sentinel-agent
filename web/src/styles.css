@@ -82,6 +82,38 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   background: var(--accent); color: #fff; flex: none;
 }
 
+.operator-id { display: inline-flex; align-items: center; gap: 8px; }
+.operator-id__email { color: var(--ink-2); font-size: 12px; }
+
+/* ---------- authentication ---------- */
+.auth-shell {
+  min-height: 100vh; display: grid; place-items: center; padding: 24px;
+  background: var(--plane);
+}
+.auth-card {
+  width: min(100%, 390px); padding: 24px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.auth-card--loading { color: var(--muted); text-align: center; }
+.auth-card__head { display: flex; align-items: center; gap: 10px; color: var(--ink); }
+.auth-card__head strong { display: block; font-weight: 650; }
+.auth-card__head div div { color: var(--muted); font-size: 12px; }
+.auth-card h1 { margin: 26px 0 4px; font-size: 24px; letter-spacing: -0.02em; }
+.auth-card p { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+.auth-error {
+  margin-top: 12px; padding: 9px 10px;
+  border: 1px solid var(--critical); border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--critical) 8%, var(--surface));
+  color: var(--ink); font-size: 12.5px;
+}
+.auth-submit { width: 100%; margin-top: 16px; }
+
+@media (max-width: 720px) {
+  .topbar { flex-wrap: wrap; padding: 12px 16px; }
+  .brand small, .operator-id__email { display: none; }
+}
+
 .page { max-width: 1240px; margin: 0 auto; padding: 24px; }
 
 .grid {

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
-router = APIRouter(tags=["audit"])
+from ..auth.deps import get_current_user
+
+router = APIRouter(tags=["audit"], dependencies=[Depends(get_current_user)])
 
 
 @router.get("/audit")

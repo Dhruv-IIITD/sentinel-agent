@@ -9,13 +9,18 @@ graph state, so we never mix in decisions from an earlier interrupt.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from langgraph.types import Command
 from pydantic import BaseModel
 
+from ..auth.deps import get_current_user
+from ..auth.models import User
+from ..events import safe_publish
 from .chat import finalize
 
-router = APIRouter(tags=["approvals"])
+router = APIRouter(tags=["approvals"], dependencies=[Depends(get_current_user)])
 
 _STATUS_TO_DECISION = {"approved": "approve", "rejected": "reject", "modified": "modify"}
 
@@ -76,8 +81,12 @@ async def preview(approval_id: str, request: Request) -> dict:
 
 
 @router.post("/approvals/{approval_id}/decision")
-async def decide(approval_id: str, body: DecisionRequest, request: Request) -> dict:
-    graph = request.app.state.graph
+async def decide(
+    approval_id: str,
+    body: DecisionRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+) -> dict:
     store = request.app.state.store
 
     if body.decision not in ("approve", "reject", "modify"):
@@ -89,7 +98,36 @@ async def decide(approval_id: str, body: DecisionRequest, request: Request) -> d
     if row["status"] != "pending":
         raise HTTPException(status_code=409, detail=f"approval already {row['status']}")
 
-    await store.decide_approval(approval_id, body.decision, body.modified_args, body.reason, body.decided_by)
+    if (
+        current_user.role == "operator"
+        and body.decision in ("approve", "modify")
+        and row["tool_name"] in ("issue_refund", "apply_credit")
+    ):
+        amounts = [row.get("tool_args", {}).get("amount", 0)]
+        if body.modified_args is not None:
+            amounts.append(body.modified_args.get("amount", 0))
+        try:
+            amount = max(float(value or 0) for value in amounts)
+        except (TypeError, ValueError):
+            amount = 0
+        if amount > request.app.state.settings.operator_approval_limit:
+            raise HTTPException(
+                status_code=403,
+                detail="this action exceeds your approval limit; a supervisor is required",
+            )
+
+    graph = request.app.state.graph
+    decided = await store.decide_approval(
+        approval_id, body.decision, body.modified_args, body.reason, body.decided_by
+    )
+    if decided is not None:
+        await safe_publish(request.app.state.event_bus, {
+            "type": "approval.resolved",
+            "approval_id": decided["id"],
+            "thread_id": decided["thread_id"],
+            "status": decided["status"],
+            "at": datetime.now(timezone.utc).isoformat(),
+        })
 
     thread_id = row["thread_id"]
     cfg = {"configurable": {"thread_id": thread_id}}
@@ -108,4 +146,4 @@ async def decide(approval_id: str, body: DecisionRequest, request: Request) -> d
 
     resume = {tid: _to_resume_decision(by_tcid[tid]) for tid in active_ids}
     result = await graph.ainvoke(Command(resume=resume), cfg)
-    return await finalize(graph, store, thread_id, cfg, result)
+    return await finalize(graph, store, request.app.state.event_bus, thread_id, cfg, result)

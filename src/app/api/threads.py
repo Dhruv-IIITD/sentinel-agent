@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
+from ..auth.deps import get_current_user
 from .serialization import serialize_message
 
-router = APIRouter(tags=["threads"])
+router = APIRouter(tags=["threads"], dependencies=[Depends(get_current_user)])
 
 
 @router.get("/threads/{thread_id}")

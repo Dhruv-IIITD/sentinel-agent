@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..agent.counterfactual import run_counterfactual
+from ..auth.deps import get_current_user
 from ..config import settings
 
-router = APIRouter(tags=["counterfactual"])
+router = APIRouter(tags=["counterfactual"], dependencies=[Depends(get_current_user)])
 
 
 @router.post("/threads/{thread_id}/counterfactual")

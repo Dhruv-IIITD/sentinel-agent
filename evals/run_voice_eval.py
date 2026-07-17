@@ -37,6 +37,7 @@ from app.agent.graph import build_graph  # noqa: E402
 from app.api.voice import VOICE_ACTIONS  # noqa: E402
 from app.domain.ecommerce import MemoryStore  # noqa: E402
 from app.main import app  # noqa: E402
+from app.safety.verification import InMemoryVerificationStore  # noqa: E402
 from evals.harness import score  # noqa: E402
 
 DATA = Path(__file__).resolve().parent / "datasets"
@@ -67,7 +68,7 @@ def _fresh(client: TestClient, delivered_days_ago: int | None) -> MemoryStore:
             datetime.now(timezone.utc) - timedelta(days=delivered_days_ago)
         ).isoformat()
     app.state.store = store
-    app.state.verified = {}
+    app.state.verification = InMemoryVerificationStore()
     app.state.graph = build_graph(
         MemorySaver(), store, _StubModel(), policy=app.state.policy, hard_cap=1000.0
     )

@@ -61,7 +61,7 @@ def _matches(order: dict, claim: str) -> bool:
     return bool(name) and (claim == name or claim in name.split())
 
 
-def _require_verified(request: Request, thread_id: str, order_id: int) -> None:
+async def _require_verified(request: Request, thread_id: str, order_id: int) -> None:
     """The identity gate, enforced HERE — not only in the voice agent's tools.
 
     The agent-side check is a fast, friendly refusal; this is the one that actually
@@ -69,10 +69,9 @@ def _require_verified(request: Request, thread_id: str, order_id: int) -> None:
     still cannot read an order or move money on a caller who was never verified.
     Defence in depth: the prompt is not a security boundary, this is.
 
-    (The ledger is per-process. A multi-worker deployment would persist it next to
-    the call session — the mechanism is the point, not the storage.)
+    The configured verification store is shared across workers when Redis is enabled.
     """
-    if order_id not in request.app.state.verified.get(thread_id, set()):
+    if not await request.app.state.verification.is_verified(thread_id, order_id):
         raise HTTPException(
             status_code=403,
             detail=f"caller on {thread_id} is not verified for order {order_id}",
@@ -87,7 +86,7 @@ async def verify_identity(body: VerifyIdentityBody, request: Request) -> dict:
     if not _matches(order, body.email_or_name):
         return {"verified": False, "reason": "those details do not match our records"}
 
-    request.app.state.verified.setdefault(body.thread_id, set()).add(body.order_id)
+    await request.app.state.verification.mark(body.thread_id, body.order_id)
     return {
         "verified": True,
         "order_id": body.order_id,
@@ -97,7 +96,7 @@ async def verify_identity(body: VerifyIdentityBody, request: Request) -> dict:
 
 @router.get("/order/{order_id}")
 async def get_order(order_id: int, request: Request, thread_id: str) -> dict:
-    _require_verified(request, thread_id, order_id)
+    await _require_verified(request, thread_id, order_id)
     order = await request.app.state.store.get_order(order_id)
     if "error" in order:
         return order
@@ -106,7 +105,7 @@ async def get_order(order_id: int, request: Request, thread_id: str) -> dict:
 
 @router.get("/shipment/{order_id}")
 async def track_shipment(order_id: int, request: Request, thread_id: str) -> dict:
-    _require_verified(request, thread_id, order_id)
+    await _require_verified(request, thread_id, order_id)
     return await request.app.state.store.track_shipment(order_id)
 
 
@@ -119,7 +118,7 @@ async def refund_eligibility(
     Runs the *same* policy engine that gates the real action, so what the caller
     is told matches what would actually happen.
     """
-    _require_verified(request, thread_id, order_id)
+    await _require_verified(request, thread_id, order_id)
     store = request.app.state.store
     order = await store.get_order(order_id)
     if "error" in order:
@@ -283,7 +282,7 @@ async def request_action(body: ActionBody, request: Request) -> dict:
     order_id = body.args.get("order_id")
     if order_id is None:
         raise HTTPException(status_code=422, detail="a voice action must name an order_id")
-    _require_verified(request, body.thread_id, int(order_id))
+    await _require_verified(request, body.thread_id, int(order_id))
 
     graph = request.app.state.graph
     store = request.app.state.store
@@ -313,7 +312,7 @@ async def request_action(body: ActionBody, request: Request) -> dict:
         as_node="agent",
     )
     result = await graph.ainvoke(None, cfg)
-    out = await finalize(graph, store, body.thread_id, cfg, result)
+    out = await finalize(graph, store, request.app.state.event_bus, body.thread_id, cfg, result)
 
     if out["status"] == "awaiting_approval":
         approvals = out["approvals"]

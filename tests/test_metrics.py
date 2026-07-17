@@ -12,6 +12,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from app.agent.graph import build_graph
 from app.domain.ecommerce import MemoryStore
 from app.main import app
+from app.safety.verification import InMemoryVerificationStore
 from tests.fakes import FakeModel
 
 CALL = "m-call"
@@ -20,7 +21,7 @@ CALL = "m-call"
 def _setup(client: TestClient) -> MemoryStore:
     store = MemoryStore()
     app.state.store = store
-    app.state.verified = {}
+    app.state.verification = InMemoryVerificationStore()
     app.state.graph = build_graph(
         MemorySaver(), store, FakeModel([]), policy=app.state.policy, hard_cap=1000.0
     )

@@ -31,6 +31,70 @@ def test_seed_data_is_visible():
         assert "alice@example.com" in emails
 
 
+def test_seed_products_are_visible():
+    with _client() as client:
+        app.state.store = MemoryStore()
+
+        products = client.get("/store/products").json()
+        assert [p["sku"] for p in products] == [
+            "CERAMIC-DINNER-SET",
+            "BLUETOOTH-SPEAKER",
+            "STANDING-DESK",
+        ]
+        assert products[0]["price"] == 180.0
+        assert products[0]["emoji"] == "🍽️"
+
+
+def test_create_product_is_listed():
+    with _client() as client:
+        app.state.store = MemoryStore()
+
+        resp = client.post(
+            "/store/products",
+            json={
+                "sku": "MECH-KEYBOARD",
+                "name": "Mechanical keyboard",
+                "price": 140.0,
+                "description": "Hot-swappable keyboard",
+                "emoji": "⌨️",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        product = resp.json()
+        assert product["id"] == 4
+        assert product["active"] is True
+        assert any(p["id"] == product["id"] for p in client.get("/store/products").json())
+
+
+def test_create_order_from_product_uses_catalog_name_and_price():
+    with _client() as client:
+        app.state.store = MemoryStore()
+
+        body = client.post(
+            "/store/orders",
+            json={
+                "name": "Product Buyer",
+                "email": "buyer@example.com",
+                "product_id": 2,
+                # Product selection wins over stale client-supplied values.
+                "item": "Wrong item",
+                "amount": 999.0,
+            },
+        ).json()
+
+        assert body["order"]["product_id"] == 2
+        assert body["order"]["item_description"] == "Bluetooth speaker"
+        assert body["order"]["amount"] == 39.99
+
+
+async def test_memory_store_rejects_unknown_product_for_order():
+    store = MemoryStore()
+    result = await store.create_order(
+        1, "Ignored", 1.0, product_id=999,
+    )
+    assert result == {"error": "product 999 not found"}
+
+
 def test_create_order_returns_a_verify_hint():
     with _client() as client:
         app.state.store = MemoryStore()

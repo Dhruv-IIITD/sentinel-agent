@@ -14,6 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 CheckpointBackend = Literal["auto", "memory", "postgres", "sqlite"]
 
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -38,6 +39,30 @@ class Settings(BaseSettings):
     # --- Database (checkpointer state + audit + app data + RAG) ---
     # e.g. postgresql://user:pass@localhost:5432/hitl_agent
     database_url: str = ""
+
+    # --- Shared cross-worker state / events (optional) ---
+    redis_url: str = ""
+    verification_ttl_seconds: int = 30 * 60
+    # Disabled by default; positive values cap requests per client IP per minute.
+    rate_limit_per_minute: int = 0
+    # Disabled by default; positive values flag overdue pending approvals.
+    sla_seconds: int = 0
+    sla_poll_seconds: int = 15
+
+    # --- Payment side effects ---
+    payments_provider: str = "mock"
+    stripe_api_key: str = ""
+
+    # --- Operator authentication (optional) ---
+    auth_enabled: bool = False
+    jwt_secret: str = ""
+    jwt_expire_minutes: int = 720
+    operator_approval_limit: float = 100.0
+    demo_user_password: str = "demo-password"
+
+    @property
+    def redis_configured(self) -> bool:
+        return bool(self.redis_url)
 
     # --- Checkpointer backend ---
     # "auto" -> postgres when DATABASE_URL is set, else in-memory.
