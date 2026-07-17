@@ -40,6 +40,27 @@ export type Product = {
   emoji: string;
 };
 
+export type Customer360 = {
+  customer: { id: number; name: string; email: string };
+  orders: Array<{
+    id: number;
+    item_description: string;
+    amount: number;
+    status: string;
+    delivered_at: string | null;
+  }>;
+  refunds: Array<{
+    order_id: number;
+    amount: number;
+    status: string;
+    reason: string;
+    provider: string | null;
+  }>;
+  notes: Array<{ order_id: number; note: string; author: string }>;
+};
+
+export type Customer360Result = Customer360 | { error: string };
+
 export type NewProduct = {
   sku: string;
   name: string;
@@ -166,6 +187,8 @@ export const api = {
   metrics: () => req<Metrics>("/metrics"),
   orders: () => req<Order[]>("/store/orders"),
   products: () => req<Product[]>("/store/products"),
+  customer360: (orderId: number) =>
+    req<Customer360Result>(`/store/customer-360/${orderId}`),
   createProduct: (body: NewProduct) =>
     req<Product>("/store/products", { method: "POST", body: JSON.stringify(body) }),
   createOrder: (body: NewOrder) =>

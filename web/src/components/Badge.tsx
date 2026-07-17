@@ -76,6 +76,28 @@ export function tierLabel(tier: string | null): string {
   return (tier ?? "unknown").replace("_", "-");
 }
 
+export function statusOf(status: string): Status {
+  switch (status) {
+    case "delivered":
+    case "issued":
+    case "succeeded":
+    case "applied":
+    case "approved":
+      return "good";
+    case "in_transit":
+    case "processing":
+    case "pending":
+      return "warning";
+    case "cancelled":
+    case "failed":
+    case "rejected":
+    case "reversed":
+      return "critical";
+    default:
+      return "neutral";
+  }
+}
+
 export function eventStatus(event: string): Status {
   switch (event) {
     case "executed":

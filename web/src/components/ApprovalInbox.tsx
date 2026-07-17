@@ -1,6 +1,7 @@
 import { Suspense, lazy, useState } from "react";
 import { api, type Approval, type ApprovalCall, type Decision } from "../api";
 import { Badge, Icon, tierLabel, tierStatus } from "./Badge";
+import { Customer360 } from "./Customer360";
 
 const LiveCall = lazy(() => import("./LiveCall"));
 
@@ -35,6 +36,8 @@ function ApprovalCard({
   const [call, setCall] = useState<ApprovalCall | null>(null);
   const [busy, setBusy] = useState(false);
   const amount = Number(approval.tool_args.amount);
+  const rawOrderId = approval.tool_args.order_id;
+  const orderId = typeof rawOrderId === "number" ? rawOrderId : Number(rawOrderId);
   const exceedsOperatorLimit =
     role === "operator" &&
     (approval.tool_name === "issue_refund" || approval.tool_name === "apply_credit") &&
@@ -170,6 +173,8 @@ function ApprovalCard({
             </div>
           );
         })()}
+
+      {Number.isInteger(orderId) && orderId > 0 && <Customer360 orderId={orderId} />}
 
       <label className="field">Arguments — edit before choosing “Modify”</label>
       <textarea rows={4} value={args} onChange={(e) => setArgs(e.target.value)} spellCheck={false} />

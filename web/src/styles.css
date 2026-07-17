@@ -84,6 +84,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .operator-id { display: inline-flex; align-items: center; gap: 8px; }
 .operator-id__email { color: var(--ink-2); font-size: 12px; }
+.surface-link {
+  color: var(--accent); font-size: 12.5px; font-weight: 590;
+  text-decoration: none; white-space: nowrap;
+}
+.surface-link:hover { text-decoration: underline; }
+.surface-link--quiet { color: var(--muted); font-weight: 500; }
 
 /* ---------- authentication ---------- */
 .auth-shell {
@@ -115,6 +121,44 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 
 .page { max-width: 1240px; margin: 0 auto; padding: 24px; }
+
+/* ---------- public help center ---------- */
+.help-surface { min-height: 100vh; background: var(--plane); }
+.help-topbar {
+  display: flex; align-items: center; gap: 12px; max-width: 980px;
+  margin: 0 auto; padding: 18px 24px;
+}
+.help-page { width: min(100% - 32px, 900px); margin: 0 auto; padding: 44px 0 64px; }
+.help-hero { max-width: 680px; margin: 0 auto 28px; text-align: center; }
+.help-hero__eyebrow {
+  color: var(--accent); font-size: 11px; font-weight: 680;
+  text-transform: uppercase; letter-spacing: 0.1em;
+}
+.help-hero h1 {
+  margin: 8px 0 10px; font-size: clamp(36px, 6vw, 58px);
+  line-height: 1.05; letter-spacing: -0.045em;
+}
+.help-hero p {
+  max-width: 58ch; margin: 0 auto; color: var(--ink-2);
+  font-size: 16px; line-height: 1.65;
+}
+.help-call { max-width: 780px; margin: 0 auto; }
+.help-call .panel { box-shadow: var(--shadow); }
+.help-promises {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px; max-width: 780px; margin: 18px auto 0;
+}
+.help-promises > div {
+  padding: 14px 16px; border: 1px solid var(--line);
+  border-radius: var(--radius); background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+.help-promises strong { display: block; margin-bottom: 3px; font-size: 13px; }
+.help-promises span { color: var(--muted); font-size: 12.5px; }
+@media (max-width: 620px) {
+  .help-topbar { padding: 14px 16px; }
+  .help-page { padding-top: 24px; }
+  .help-promises { grid-template-columns: 1fr; }
+}
 
 .grid {
   display: grid; gap: 18px;
@@ -210,6 +254,38 @@ textarea:focus, input:focus { outline: 2px solid color-mix(in srgb, var(--accent
 .outcome__row { display: flex; gap: 8px; align-items: baseline; }
 .outcome__row + .outcome__row { margin-top: 6px; }
 code { font: 12px var(--mono); background: var(--plane); padding: 1px 5px; border-radius: 5px; border: 1px solid var(--line); }
+
+/* Customer context beside the decision: compact enough to scan without leaving the card. */
+.customer360 {
+  margin-top: 10px; padding: 11px 12px; border: 1px solid var(--line);
+  border-radius: var(--radius-sm); background: var(--surface-2); font-size: 12px;
+}
+.customer360--muted { color: var(--muted); }
+.customer360__head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.customer360__head strong { font-size: 13.5px; }
+.customer360__eyebrow, .customer360__label {
+  color: var(--muted); font-size: 10.5px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.customer360__email { color: var(--ink-2); margin-top: 1px; }
+.customer360__section { margin-top: 10px; }
+.customer360__row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line);
+}
+.customer360__row:last-child { border-bottom: 0; }
+.customer360__id { color: var(--muted); font-family: var(--mono); }
+.customer360__item { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.customer360__amount { font-variant-numeric: tabular-nums; text-align: right; }
+.customer360__columns { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.customer360__empty { color: var(--muted); margin-top: 6px; }
+.customer360__note { margin-top: 6px; color: var(--ink-2); }
+.customer360__note span { display: block; color: var(--muted); font: 10.5px var(--mono); }
+@media (max-width: 680px) {
+  .customer360__columns { grid-template-columns: 1fr; gap: 0; }
+  .customer360__row { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .customer360__row .badge { grid-column: 2 / -1; justify-self: start; }
+}
 
 /* ---------- call panel ---------- */
 .tabs { display: flex; gap: 4px; background: var(--surface-2); padding: 3px; border-radius: 10px; }

@@ -1,13 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type CreatedOrder, type Order, type Product } from "../api";
-import { Badge, Icon, type Status } from "./Badge";
-
-function statusOf(s: string): Status {
-  if (s === "delivered") return "good";
-  if (s === "in_transit" || s === "processing") return "warning";
-  if (s === "cancelled") return "critical";
-  return "neutral";
-}
+import { Badge, Icon, statusOf } from "./Badge";
 
 function spellOrder(id: number): string {
   return String(id).split("").join(" ");

@@ -4,6 +4,7 @@ import { Icon } from "./Badge";
 
 // Loaded only when a call actually starts — keeps LiveKit out of the initial bundle.
 const LiveCall = lazy(() => import("./LiveCall"));
+const NOOP = () => {};
 
 function VoiceTab({
   approvals,
@@ -44,7 +45,7 @@ function VoiceTab({
         </button>
         <p className="stage__hint">
           {unavailable ??
-            "Talk to the support agent in your browser. It can look up orders and issue refunds — high-stakes actions pause for your approval."}
+            "Talk to the support agent in your browser. It can look up orders and help with refunds — sensitive actions pause for a support specialist."}
         </p>
       </div>
     );
@@ -116,16 +117,19 @@ function TextTab({
 }
 
 export function CallPanel(props: {
-  approvals: Approval[];
+  approvals?: Approval[];
   notify: (msg: string, ok?: boolean) => void;
-  onActivity: () => void;
+  onActivity?: () => void;
+  title?: string;
 }) {
   const [tab, setTab] = useState<"voice" | "text">("voice");
+  const approvals = props.approvals ?? [];
+  const onActivity = props.onActivity ?? NOOP;
 
   return (
     <section className="panel">
       <div className="panel__head">
-        <span className="panel__title">Live call</span>
+        <span className="panel__title">{props.title ?? "Live call"}</span>
         <div className="spacer" />
         <div className="tabs" role="tablist">
           <button className="tab" role="tab" aria-selected={tab === "voice"} onClick={() => setTab("voice")}>
@@ -138,9 +142,9 @@ export function CallPanel(props: {
       </div>
       <div className="panel__body">
         {tab === "voice" ? (
-          <VoiceTab {...props} />
+          <VoiceTab approvals={approvals} notify={props.notify} onActivity={onActivity} />
         ) : (
-          <TextTab notify={props.notify} onActivity={props.onActivity} />
+          <TextTab notify={props.notify} onActivity={onActivity} />
         )}
       </div>
     </section>

@@ -53,6 +53,7 @@ class Store(Protocol):
     # system you can look at and add to (e.g. register yourself, then call in).
     async def list_customers(self) -> list[dict]: ...
     async def list_orders(self) -> list[dict]: ...
+    async def get_customer_360(self, order_id: int) -> dict: ...
     async def list_products(self) -> list[dict]: ...
     async def get_product(self, product_id: int) -> dict | None: ...
     async def create_product(
@@ -224,6 +225,49 @@ class MemoryStore:
 
     async def list_orders(self) -> list[dict]:
         return [self._order_with_customer(o) for o in sorted(self.orders.values(), key=lambda o: o["id"])]
+
+    async def get_customer_360(self, order_id: int) -> dict:
+        order = self.orders.get(order_id)
+        if order is None:
+            return {"error": f"order {order_id} not found"}
+
+        customer_id = order["customer_id"]
+        customer_orders = sorted(
+            (o for o in self.orders.values() if o["customer_id"] == customer_id),
+            key=lambda o: o["id"],
+        )
+        order_ids = {o["id"] for o in customer_orders}
+        customer = self.customers[customer_id]
+        return {
+            "customer": {
+                "id": customer["id"], "name": customer["name"], "email": customer["email"],
+            },
+            "orders": [
+                {
+                    "id": o["id"], "item_description": o["item_description"],
+                    "amount": o["amount"], "status": o["status"],
+                    "delivered_at": o.get("delivered_at"),
+                }
+                for o in customer_orders
+            ],
+            "refunds": [
+                {
+                    "order_id": refund["order_id"], "amount": refund["amount"],
+                    "status": refund["status"], "reason": refund["reason"],
+                    "provider": refund.get("provider"),
+                }
+                for refund in self.refunds
+                if refund["order_id"] in order_ids
+            ],
+            "notes": [
+                {
+                    "order_id": note["order_id"], "note": note["note"],
+                    "author": note["author"],
+                }
+                for note in self.notes
+                if note["order_id"] in order_ids
+            ],
+        }
 
     async def list_products(self) -> list[dict]:
         return [dict(p) for p in sorted(self.products.values(), key=lambda p: p["id"])]
@@ -622,6 +666,61 @@ class PostgresStore:
                 select(Order).options(joinedload(Order.customer)).order_by(Order.id)
             )).all()
             return [self._order_dict(o, o.customer) for o in rows]
+
+    async def get_customer_360(self, order_id: int) -> dict:
+        from sqlalchemy import select
+
+        from ..db.models import Customer, Order, OrderNote, Refund
+        from ..db.session import session_scope
+
+        async with session_scope() as s:
+            order = await s.get(Order, order_id)
+            if order is None:
+                return {"error": f"order {order_id} not found"}
+
+            customer = await s.get(Customer, order.customer_id)
+            orders = (await s.scalars(
+                select(Order).where(Order.customer_id == order.customer_id).order_by(Order.id)
+            )).all()
+            refunds = (await s.scalars(
+                select(Refund)
+                .join(Order, Refund.order_id == Order.id)
+                .where(Order.customer_id == order.customer_id)
+                .order_by(Refund.id)
+            )).all()
+            notes = (await s.scalars(
+                select(OrderNote)
+                .join(Order, OrderNote.order_id == Order.id)
+                .where(Order.customer_id == order.customer_id)
+                .order_by(OrderNote.id)
+            )).all()
+            return {
+                "customer": {
+                    "id": customer.id, "name": customer.name, "email": customer.email,
+                },
+                "orders": [
+                    {
+                        "id": o.id, "item_description": o.item_description,
+                        "amount": float(o.amount), "status": o.status,
+                        "delivered_at": o.delivered_at.isoformat() if o.delivered_at else None,
+                    }
+                    for o in orders
+                ],
+                "refunds": [
+                    {
+                        "order_id": refund.order_id, "amount": float(refund.amount),
+                        "status": refund.status, "reason": refund.reason,
+                        "provider": refund.provider,
+                    }
+                    for refund in refunds
+                ],
+                "notes": [
+                    {
+                        "order_id": note.order_id, "note": note.note, "author": note.author,
+                    }
+                    for note in notes
+                ],
+            }
 
     @staticmethod
     def _product_dict(product) -> dict:

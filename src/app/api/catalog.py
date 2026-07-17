@@ -14,8 +14,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, model_validator
+
+from ..auth.deps import get_current_user
 
 router = APIRouter(prefix="/store", tags=["store"])
 
@@ -28,6 +30,11 @@ async def list_customers(request: Request) -> list[dict]:
 @router.get("/orders")
 async def list_orders(request: Request) -> list[dict]:
     return await request.app.state.store.list_orders()
+
+
+@router.get("/customer-360/{order_id}", dependencies=[Depends(get_current_user)])
+async def get_customer_360(order_id: int, request: Request) -> dict:
+    return await request.app.state.store.get_customer_360(order_id)
 
 
 @router.get("/products")

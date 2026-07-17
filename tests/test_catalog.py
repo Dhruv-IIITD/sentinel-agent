@@ -5,9 +5,11 @@ invisible fixture into something an operator can actually use.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi.testclient import TestClient
 
-from app.domain.ecommerce import MemoryStore
+from app.domain.ecommerce import ExecCtx, MemoryStore
 from app.main import app
 
 
@@ -154,3 +156,48 @@ def test_created_order_flows_through_the_real_refund_gate():
         elig = client.get(f"/voice/refund_eligibility/{oid}", params={"thread_id": "c"}).json()
         assert elig["needs_approval"] is True  # $240 > $50 limit
         assert elig["amount"] == 240.0
+
+
+def test_customer_360_contains_history_refunds_and_notes():
+    store = MemoryStore()
+    asyncio.run(store.issue_refund(
+        4471,
+        75.0,
+        "damaged on arrival",
+        ExecCtx(thread_id="customer-360", idempotency_key="customer-360-refund"),
+    ))
+    asyncio.run(store.add_note(
+        4473,
+        "Customer prefers email follow-up",
+        "operator@demo",
+        ExecCtx(thread_id="customer-360", idempotency_key="customer-360-note"),
+    ))
+
+    with _client() as client:
+        app.state.store = store
+        response = client.get("/store/customer-360/4471")
+
+        assert response.status_code == 200, response.text
+        bundle = response.json()
+        assert bundle["customer"] == {
+            "id": 1,
+            "name": "Alice Rivera",
+            "email": "alice@example.com",
+        }
+        assert {order["id"] for order in bundle["orders"]} == {4471, 4473}
+        assert bundle["refunds"] == [{
+            "order_id": 4471,
+            "amount": 75.0,
+            "status": "issued",
+            "reason": "damaged on arrival",
+            "provider": "mock",
+        }]
+        assert bundle["notes"] == [{
+            "order_id": 4473,
+            "note": "Customer prefers email follow-up",
+            "author": "operator@demo",
+        }]
+
+        assert client.get("/store/customer-360/999999").json() == {
+            "error": "order 999999 not found"
+        }
